@@ -423,5 +423,5 @@ test('real React: the settings section renders', { skip: real ? false : 'react n
   const { slots } = mount({ react: real.React })
   const Settings = slots.find((slot) => slot.options.name === 'settings.section').component
   const html = real.server.renderToStaticMarkup(real.React.createElement(Settings))
-  for (const label of ['书库根目录', '字号', '行距', '老板键']) assert.match(html, new RegExp(label))
+  for (const label of ['书库根目录', '字号', '行距', '老板键', '常驻侧边栏', '会话标题']) assert.match(html, new RegExp(label))
 })

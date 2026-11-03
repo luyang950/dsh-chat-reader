@@ -8,10 +8,10 @@
 //     model messages, so the reading costs zero tokens. The browser half folds that
 //     pair into one custom chat node — the reader card.
 //
-//     The handler also remembers which Session the book was opened in: a `/read`
-//     in a fresh New Session starts no model turn, so DSH keeps that Session
-//     "blank" and drops it from the sidebar once you switch away. The browser half
-//     uses the list to offer 继续阅读 in the sidebar's More menu.
+//     The handler also remembers which Session the book was opened in (the browser
+//     half offers those as 继续阅读 in the sidebar's More menu), and, when that
+//     Session is still blank, lets the agent loop run one empty turn so DSH keeps
+//     it in the sidebar — see lib/session.mjs. That turn calls no model.
 //
 //   * a JSON API under /dsh-chat-reader/api/* the card pages through. Every route
 //     takes a book *id* (a relative path inside the library root) and never a raw
@@ -50,6 +50,7 @@ import {
   writeConfig,
   writeProgress,
 } from './lib/store.mjs'
+import { nameSession, onPreStep, sealBlankSession } from './lib/session.mjs'
 
 export const name = 'dsh-chat-reader'
 export const inject = ['commands']
@@ -162,7 +163,11 @@ export function sessionIdOf(invocation) {
   return isSessionId(id) ? id : null
 }
 
-export function readCommand() {
+/**
+ * @param {{ afterRead?: (invocation: object, entry: object) => void }} [hooks]
+ *   `afterRead` runs once the command has settled (after `command/done` is logged).
+ */
+export function readCommand(hooks = {}) {
   return {
     name: 'read',
     description: '在会话里打开一本本地小说（txt / md / epub），正文不进模型上下文',
@@ -175,6 +180,7 @@ export function readCommand() {
         const entry = await openBook(id)
         const sessionId = sessionIdOf(invocation)
         if (sessionId) await recordSession({ sessionId, book: entry.id, title: entry.title }).catch(() => {})
+        if (typeof hooks.afterRead === 'function') setImmediate(() => hooks.afterRead(invocation, entry))
         return { kind: 'success', text: JSON.stringify(bookSummary(entry)) }
       } catch (error) {
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -317,8 +323,31 @@ export async function handleApi(req, res) {
 /* ── plugin ──────────────────────────────────────────────────────────────── */
 
 export function apply(ctx) {
+  let titles = null
+  ctx.inject(['sessionTitle'], (titleCtx) => {
+    titles = titleCtx.sessionTitle
+    titleCtx.effect(() => () => {
+      titles = null
+    }, 'dsh-chat-reader: session titles')
+  })
+
+  // Rejects only the empty turn started below; see lib/session.mjs.
+  ctx.on('agent/pre-step', onPreStep, true)
+
+  const afterRead = async (invocation, entry) => {
+    const agent = invocation?.agent
+    try {
+      const config = await readConfig()
+      if (!config.keepSession) return
+      if (!sealBlankSession(agent)) return
+      nameSession(titles, agent.session, config.sessionTitle || entry.title)
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-chat-reader: keeping the reading session failed: ${error?.message ?? error}`)
+    }
+  }
+
   // `commands.register` is bound to this plugin's lifecycle and returns its disposer.
-  ctx.commands.register(readCommand())
+  ctx.commands.register(readCommand({ afterRead }))
 
   ctx.inject(['webServer'], (webCtx) => {
     webCtx.effect(

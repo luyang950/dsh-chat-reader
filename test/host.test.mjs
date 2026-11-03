@@ -303,23 +303,104 @@ test('intParam rejects non-integers and out-of-range values', () => {
 
 /* ── plugin wiring ───────────────────────────────────────────────────────── */
 
-test('host plugin: injects only commands; webServer attached lazily via ctx.inject', () => {
-  assert.deepEqual(inject, ['commands'])
+function fakeHost() {
   const commands = []
   const routes = []
+  const listeners = []
+  const renamed = []
+  const titles = { get: () => undefined, rename: (session, title) => renamed.push([session.id, title]) }
   const ctx = {
     commands: { register: (definition) => commands.push(definition) },
+    on: (name, listener, prepend) => listeners.push({ name, listener, prepend }),
     inject(services, callback) {
-      assert.deepEqual(services, ['webServer'])
-      callback({
-        webServer: { register: (route) => (routes.push(route), () => {}) },
-        effect: (run) => run(),
-      })
+      if (services[0] === 'webServer') {
+        callback({ webServer: { register: (route) => (routes.push(route), () => {}) }, effect: (run) => run() })
+      } else {
+        assert.deepEqual(services, ['sessionTitle'])
+        callback({ sessionTitle: titles, effect: () => {} })
+      }
     },
   }
   apply(ctx)
+  return { commands, routes, listeners, renamed }
+}
+
+/** A stand-in for the agent loop: wakeDriver runs one turn through the pre-step chain. */
+function fakeAgent(id, { lastTurn = 0, pending = false } = {}) {
+  const agent = {
+    id,
+    session: { id },
+    phase: { kind: 'idle', lastTurn },
+    inbox: { hasPending: pending },
+    turns: [],
+    preStep: null,
+    wakeDriver() {
+      const turn = agent.phase.lastTurn + 1
+      agent.phase = { kind: 'running', turn }
+      const decision = agent.preStep({ agent, turn, step: 1, messages: [] }, () => Promise.resolve({ kind: 'enter', messages: ['runtime context'] }))
+      agent.turns.push(decision)
+      agent.phase = { kind: 'idle', lastTurn: turn }
+    },
+  }
+  return agent
+}
+
+test('host plugin: injects only commands; webServer and sessionTitle attached lazily via ctx.inject', () => {
+  assert.deepEqual(inject, ['commands'])
+  const { commands, routes, listeners } = fakeHost()
   assert.deepEqual(commands.map((command) => command.name), ['read'])
   assert.equal(routes.length, 1)
   assert.equal(routes[0].kind, 'prefix')
   assert.equal(routes[0].path, '/dsh-chat-reader/api')
+  assert.deepEqual(listeners.map((entry) => [entry.name, entry.prepend]), [['agent/pre-step', true]])
+})
+
+test('/read in a blank Session runs one empty turn that is rejected before any model call, then titles it', async () => {
+  await writeConfig({ keepSession: true, sessionTitle: '' })
+  const { commands, listeners, renamed } = fakeHost()
+  const agent = fakeAgent('session-blank-1')
+  agent.preStep = listeners[0].listener
+
+  const result = await commands[0].handler({ rawInput: '小说', agent })
+  assert.equal(result.kind, 'success')
+  await new Promise((resolve) => setTimeout(resolve, 20)) // afterRead runs after the command settles
+  assert.equal(agent.turns.length, 1)
+  assert.deepEqual(await agent.turns[0], { kind: 'reject' })
+  assert.deepEqual(renamed, [['session-blank-1', '小说']])
+
+  // The next (real) turn passes straight through to the rest of the chain.
+  agent.wakeDriver()
+  assert.deepEqual(await agent.turns[1], { kind: 'enter', messages: ['runtime context'] })
+
+  // A Session that already ran a turn, or has queued input, is left alone.
+  for (const busy of [fakeAgent('session-used', { lastTurn: 2 }), fakeAgent('session-queued', { pending: true })]) {
+    busy.preStep = listeners[0].listener
+    await commands[0].handler({ rawInput: '小说', agent: busy })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(busy.turns.length, 0)
+  }
+  assert.equal(renamed.length, 1)
+})
+
+test('/read honours keepSession=false and a configured session title', async () => {
+  const { commands, listeners, renamed } = fakeHost()
+
+  await writeConfig({ keepSession: false })
+  const off = fakeAgent('session-off')
+  off.preStep = listeners[0].listener
+  await commands[0].handler({ rawInput: '小说', agent: off })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(off.turns.length, 0)
+
+  await writeConfig({ keepSession: true, sessionTitle: '周报整理' })
+  const on = fakeAgent('session-on')
+  on.preStep = listeners[0].listener
+  await commands[0].handler({ rawInput: '小说', agent: on })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(on.turns.length, 1)
+  assert.deepEqual(renamed, [['session-on', '周报整理']])
+
+  assert.equal(validateConfigPatch({ sessionTitle: 'x'.repeat(41) }).errors.length, 1)
+  assert.equal(validateConfigPatch({ keepSession: 'yes' }).errors.length, 1)
+  await writeConfig({ sessionTitle: '' })
 })

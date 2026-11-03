@@ -21,7 +21,8 @@
 - **格式**：`.txt`（UTF-8 / UTF-8 BOM / UTF-16 LE·BE（有无 BOM 均可）/ GB18030 / GBK / Big5 自动嗅探）、`.md`、`.epub`（EPUB 2/3，按 nav / NCX 分章）。txt 自动识别「第X章 / 第X回 / 卷X / 楔子 / Chapter N …」分章。
 - **每本书独立进度**，刷新页面或重启 App 后从上次段落继续。
 - **书签、章节目录、书内搜索**。
-- **继续阅读入口**：在 New Session 里 `/read` 不会开启模型轮次，DSH 会把这个会话当作空白会话，一切到别的会话就从侧边栏消失。插件会记住每次 `/read` 所在的会话，侧边栏 **More** 菜单顶部会列出最近三个「继续阅读 · 书名」，点一下就回到原来的会话，阅读卡和位置都在。老板键模式下这些菜单项也会隐藏。
+- **阅读会话常驻侧边栏**：DSH 把从没跑过轮次的会话当作空白会话，只在选中时显示，New Session 还会复用它。所以在 New Session 里 `/read` 之后，插件会让 agent 跑一个**空轮次**：这一轮在调用模型之前就被拒绝，日志里只有 `turn/start`、`turn/end`（reason `blocked`），没有请求、没有消息、不消耗 token。轮次编号由 agent loop 自己维护，之后在这个会话里正常提问不受影响。同时会话会以书名命名（可在设置里改成固定标题，比如「周报整理」）。卡片下方会出现一行 DSH 的轮次结束标记（如 "Completed in 1s"）。
+- **继续阅读入口**：侧边栏 **More** 菜单顶部列出最近三个打开过阅读卡的会话（「继续阅读 · 书名」），点一下就回到原来的会话，阅读卡和位置都在；老板键模式下这些菜单项也会隐藏。
 
 ### 键盘
 
@@ -38,7 +39,7 @@
 
 ### 设置
 
-设置 → **阅读**：书库根目录、字号（默认跟随会话）、行距、老板键（点一下后按下新组合键，需含 Ctrl / Alt / Meta 之一，或用 F1–F12）。下方列出书库里的书和各自进度。
+设置 → **阅读**：书库根目录、字号（默认跟随会话）、行距、老板键（点一下后按下新组合键，需含 Ctrl / Alt / Meta 之一，或用 F1–F12）、常驻侧边栏（默认开）、会话标题（留空用书名）。下方列出书库里的书和各自进度。
 
 ### 用法
 
@@ -64,7 +65,7 @@ dsh plugin --profile web add github:luyang950/dsh-chat-reader
 
 > 与 `dsh-read` 插件都注册 `/read` 命令，二者不能同时启用。
 
-> 已知限制：DSH 点 New Session 时会优先复用同一工作区里的空白会话，所以可能直接回到某个阅读会话。此时在里面正常提问即可，阅读卡留在上方，会话会变成普通会话并出现在侧边栏。
+> 关掉「常驻侧边栏」后，在 New Session 里打开的阅读会话会保持空白：切走后从侧边栏消失，New Session 也可能复用它，只能从 More 菜单回去。
 
 ### 安全
 
@@ -102,6 +103,7 @@ npm test        # node --test，零依赖
 index.mjs                 host 半边（cordis 插件）：/read 命令 + API 路由
 lib/book.mjs              路径约束、分段、分章、缓存、搜索
 lib/store.mjs             config / progress / notes 持久化
+lib/session.mjs           /read 后用空轮次让会话常驻侧边栏、起标题
 lib/formats/text.mjs      txt 编码嗅探
 lib/formats/epub.mjs      零依赖 ZIP + EPUB 解析
 lib/client.js             client 半边（ModuleLoader bundle，仅依赖 react）
@@ -126,7 +128,8 @@ Targets DSH `>=0.2.1-0 <0.3.0-0` (Web and Desktop; verified against the Desktop 
 - **Boss key** (default `Ctrl + Alt + B`, configurable): collapses every reader to a single `···` line and **removes the text from the DOM** (not `visibility:hidden`); press again to restore at the same paragraph. The state survives reloads.
 - **Formats** — `.txt` with encoding sniffing (UTF-8 / BOM / UTF-16 LE·BE with or without BOM / GB18030 / GBK / Big5), `.md`, `.epub` (EPUB 2/3, chapters from nav / NCX). Chapter headings in txt are detected (`第X章`, `Chapter N`, prologue …).
 - **Per-book progress**, restored after a reload or an app restart. Bookmarks, table of contents, in-book search.
-- **Way back to a reader** — `/read` in a New Session starts no model turn, so DSH treats that Session as blank and drops it from the sidebar once you switch away. The plugin remembers which Sessions hold a reader, and the sidebar's **More** menu lists the newest three as 继续阅读 · <title>; one click reopens the Session with the card where you left it. The rows are hidden in boss mode.
+- **Reading Sessions stay in the sidebar** — DSH treats a Session that never ran a turn as blank: it is listed only while selected, and New Session reuses it. So after `/read` in a New Session the plugin lets the agent run one **empty turn** that is rejected before any model call — the log holds only `turn/start` and `turn/end` (reason `blocked`): no request, no message, zero tokens. The agent loop keeps its own turn counter, so chatting in that Session later works as usual. The Session is named after the book (or a fixed title from settings). DSH shows its usual turn footer (e.g. "Completed in 1s") under the card.
+- **Way back to a reader** — the sidebar's **More** menu lists the newest three Sessions that hold a reader as 继续阅读 · <title>; one click reopens the Session with the card where you left it. The rows are hidden in boss mode.
 
 ### Keys
 
@@ -143,7 +146,7 @@ Reader shortcuts are bound to the **card** and only work once it has focus (clic
 
 ### Settings
 
-Settings → **阅读 (Reading)**: library root, font size, line height, boss key (click, then press a chord containing Ctrl / Alt / Meta, or an F-key). Lists the library with per-book progress.
+Settings → **阅读 (Reading)**: library root, font size, line height, boss key (click, then press a chord containing Ctrl / Alt / Meta, or an F-key), keep reading Sessions in the sidebar (on by default), and the Session title (empty = book title). Lists the library with per-book progress.
 
 ### Usage
 
@@ -169,7 +172,7 @@ Distributed pre-built: no `prepare`/build scripts and no TypeScript, so pnpm nev
 
 > Both this plugin and `dsh-read` register `/read`; enable only one of them.
 
-> Known limitation: DSH's New Session reuses a blank Session of the same workspace first, so it may land you back in a reading Session. Just chat there as usual — the card stays above and the Session becomes an ordinary one in the sidebar.
+> With "keep in sidebar" switched off, a reader opened in a New Session leaves that Session blank: it drops out of the sidebar when you switch away, New Session may reuse it, and the More menu is the way back.
 
 ### Security
 
