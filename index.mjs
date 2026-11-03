@@ -8,6 +8,11 @@
 //     model messages, so the reading costs zero tokens. The browser half folds that
 //     pair into one custom chat node — the reader card.
 //
+//     The handler also remembers which Session the book was opened in: a `/read`
+//     in a fresh New Session starts no model turn, so DSH keeps that Session
+//     "blank" and drops it from the sidebar once you switch away. The browser half
+//     uses the list to offer 继续阅读 in the sidebar's More menu.
+//
 //   * a JSON API under /dsh-chat-reader/api/* the card pages through. Every route
 //     takes a book *id* (a relative path inside the library root) and never a raw
 //     filesystem path; see lib/book.mjs for the confinement rules.
@@ -32,11 +37,15 @@ import {
   addNote,
   allProgress,
   expandHome,
+  forgetSession,
+  isSessionId,
   lastBook,
   libraryRoot,
   readConfig,
   readNotes,
   readProgress,
+  readSessions,
+  recordSession,
   removeNote,
   writeConfig,
   writeProgress,
@@ -146,6 +155,13 @@ export async function resolveReadArgument(argument) {
   throw httpError(`找到 ${books.length} 本匹配的书，请写得更具体些：\n${listing}`, 409)
 }
 
+/** The id of the Session a command runs in, when the invocation carries one. */
+export function sessionIdOf(invocation) {
+  const agent = invocation?.agent
+  const id = agent?.session?.id ?? agent?.id
+  return isSessionId(id) ? id : null
+}
+
 export function readCommand() {
   return {
     name: 'read',
@@ -157,6 +173,8 @@ export function readCommand() {
       try {
         const id = await resolveReadArgument(argument)
         const entry = await openBook(id)
+        const sessionId = sessionIdOf(invocation)
+        if (sessionId) await recordSession({ sessionId, book: entry.id, title: entry.title }).catch(() => {})
         return { kind: 'success', text: JSON.stringify(bookSummary(entry)) }
       } catch (error) {
         return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -234,6 +252,22 @@ const routes = {
     return { progress: await readProgress(entry.path) }
   },
 
+  /** GET → Sessions that hold a reader, newest first; POST {forget} drops one. */
+  async sessions(req) {
+    if (req.method === 'POST') {
+      const body = await readBody(req)
+      if (!isSessionId(body.forget)) throw httpError('参数 forget 非法')
+      await forgetSession(body.forget)
+    }
+    const progress = await allProgress()
+    const byBook = new Map(Object.values(progress).map((entry) => [entry.book, entry]))
+    const sessions = (await readSessions()).map((entry) => {
+      const saved = byBook.get(entry.book)
+      return { ...entry, progress: saved ? { index: saved.index, total: saved.total } : null }
+    })
+    return { sessions }
+  },
+
   /** GET ?book= → bookmarks; POST {book, index, text?} adds; POST {book, remove} deletes. */
   async notes(req, params) {
     if (req.method === 'POST') {
@@ -253,7 +287,7 @@ const routes = {
   },
 }
 
-const POST_ROUTES = new Set(['config', 'progress', 'notes'])
+const POST_ROUTES = new Set(['config', 'progress', 'notes', 'sessions'])
 
 /**
  * The single prefix handler: dispatch, method check, uniform error envelope.

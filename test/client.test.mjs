@@ -120,7 +120,7 @@ test('every ctx.<service> the bundle touches is declared in inject', () => {
   }
 })
 
-test('apply registers the four seams: event definition, chat node, hidden command row, settings section', () => {
+test('apply registers the seams: event definition, chat node, hidden command row, settings section, More-menu rows', () => {
   const { definitions, slots } = mount()
   assert.equal(definitions.length, 1)
   assert.equal(definitions[0].kind, 'dsh-chat-reader')
@@ -132,6 +132,67 @@ test('apply registers the four seams: event definition, chat node, hidden comman
   assert.deepEqual(plain(byName['conversation.chat.commandview'].options), { name: 'conversation.chat.commandview', key: 'read' })
   assert.equal(byName['conversation.chat.commandview'].component(), null)
   assert.deepEqual(plain(byName['settings.section'].options), { name: 'settings.section', id: 'dsh-chat-reader', order: 22, label: '阅读' })
+  const more = byName['sidebar.panellist.actions']
+  assert.deepEqual(plain(more.options), { name: 'sidebar.panellist.actions', id: 'dsh-chat-reader', order: -10 })
+  const injected = more.options.inject()
+  assert.equal(typeof injected.openSession, 'function')
+  assert.equal(typeof injected.listRows, 'function')
+})
+
+/* ── back to a reading Session ───────────────────────────────────────────── */
+
+const ENTRIES = [
+  { sessionId: 's-new', book: 'a.txt', title: 'A', progress: { index: 5, total: 11 } },
+  { sessionId: 's-gone', book: 'b.txt', title: 'B', progress: null },
+  { sessionId: 's-archived', book: 'c.txt', title: 'C', progress: null },
+  { sessionId: 's-open', book: 'd.txt', title: 'D', progress: null },
+]
+
+test('readingRows keeps Sessions that still exist and are not archived, and marks the open one', () => {
+  const { plugin } = loadBundle()
+  const sessions = { byId: { 's-new': { blank: true }, 's-archived': {}, 's-open': { retainedBy: { mainView: 1 } } } }
+  const rows = plain(plugin.readingRows(ENTRIES, sessions, { archivedSessionIds: ['s-archived'] }))
+  assert.deepEqual(rows.map((row) => [row.sessionId, row.current]), [['s-new', false], ['s-open', true]])
+  // Without a Session catalog the recorded list is used as is.
+  assert.equal(plugin.readingRows(ENTRIES, undefined, undefined).length, 4)
+  assert.equal(plugin.readingRows(undefined, undefined, undefined).length, 0)
+})
+
+function navigationCtx({ blank, restoreFails = false } = {}) {
+  const calls = []
+  const services = {
+    uiWorkspace: {
+      async restoreBlank(workspaceId, sessionId) {
+        calls.push(['restoreBlank', workspaceId, sessionId])
+        if (restoreFails) throw new Error('declined')
+        return sessionId
+      },
+      openSession: (sessionId) => calls.push(['openSession', sessionId]),
+    },
+    sessions: { list: { getSnapshot: () => ({ byId: { s1: { blank, cwd: '/w' } } }) } },
+    workspaces: { list: { getSnapshot: () => ({ items: [{ workspaceId: 'w1', path: '/w', sessionIds: ['s1'] }], archivedSessionIds: [] }) } },
+  }
+  return { calls, ctx: { get: (name) => services[name] } }
+}
+
+test('openReading restores a blank reading Session first, the way DSH restores one after a reload', async () => {
+  const { plugin, sandbox } = loadBundle()
+  sandbox.console = { warn() {} }
+
+  const blank = navigationCtx({ blank: true })
+  await plugin.openReading(blank.ctx, 's1')
+  assert.deepEqual(plain(blank.calls), [['restoreBlank', 'w1', 's1'], ['openSession', 's1']])
+
+  const ordinary = navigationCtx({ blank: false })
+  await plugin.openReading(ordinary.ctx, 's1')
+  assert.deepEqual(plain(ordinary.calls), [['openSession', 's1']])
+
+  const failing = navigationCtx({ blank: true, restoreFails: true })
+  await plugin.openReading(failing.ctx, 's1')
+  assert.deepEqual(plain(failing.calls).map((call) => call[0]), ['restoreBlank', 'openSession'])
+
+  // No navigation service (older host): nothing happens, nothing throws.
+  await plugin.openReading({ get: () => undefined }, 's1')
 })
 
 test('command/run(read) + command/done(success) fold into one reader node', () => {
@@ -336,6 +397,26 @@ test('real React: boss mode renders only ··· and no book content', { skip: re
     real.React.createElement(ReaderCard, { node: { key: 'x', data: { status: 'error', error: '书库里没有这本书' } } }),
   )
   assert.match(error, /书库里没有这本书/)
+})
+
+test('real React: the More menu lists reading Sessions and hides them in boss mode', { skip: real ? false : 'react not found' }, () => {
+  const { plugin, slots } = mount({ react: real.React })
+  const Menu = slots.find((slot) => slot.options.name === 'sidebar.panellist.actions').component
+  const props = { onDismiss() {}, openSession() {}, listRows: (entries) => plugin.readingRows(entries, undefined, undefined) }
+
+  plugin.shared.readingSessions = ENTRIES
+  plugin.shared.boss = false
+  const html = real.server.renderToStaticMarkup(real.React.createElement(Menu, props))
+  assert.equal((html.match(/继续阅读/g) || []).length, 3) // newest three only
+  assert.match(html, /继续阅读 · A/)
+  assert.match(html, /50%/)
+  assert.match(html, /role="menuitem"/)
+
+  plugin.shared.boss = true
+  assert.equal(real.server.renderToStaticMarkup(real.React.createElement(Menu, props)), '')
+  plugin.shared.boss = false
+  plugin.shared.readingSessions = []
+  assert.equal(real.server.renderToStaticMarkup(real.React.createElement(Menu, props)), '')
 })
 
 test('real React: the settings section renders', { skip: real ? false : 'react not found' }, () => {

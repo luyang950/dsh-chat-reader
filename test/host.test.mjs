@@ -262,6 +262,37 @@ test('/read: empty argument resumes the last book; ambiguity and escapes are err
   assert.equal(JSON.parse(absoluteInside.text).book, 'notes.md')
 })
 
+test('/read remembers the Session it ran in; GET /sessions lists them newest first with progress', async () => {
+  const invocation = (rawInput, id) => ({ rawInput, agent: { id, session: { id } } })
+  await readCommand().handler(invocation('小说', 'session-aaa'))
+  await readCommand().handler(invocation('notes', 'session-bbb'))
+  await api('POST', '/progress', { book: '武侠/小说.txt', index: 3 })
+
+  let listed = await api('GET', '/sessions')
+  assert.equal(listed.status, 200)
+  assert.deepEqual(
+    listed.body.sessions.map((entry) => [entry.sessionId, entry.book]),
+    [['session-bbb', 'notes.md'], ['session-aaa', '武侠/小说.txt']],
+  )
+  assert.deepEqual(listed.body.sessions[1].progress, { index: 3, total: 6 })
+
+  // Reading again in the same Session moves it to the top without duplicating it.
+  await readCommand().handler(invocation('小说', 'session-aaa'))
+  listed = await api('GET', '/sessions')
+  assert.deepEqual(listed.body.sessions.map((entry) => entry.sessionId), ['session-aaa', 'session-bbb'])
+
+  // A failed /read and a junk session id record nothing.
+  await readCommand().handler(invocation('没有这本书', 'session-ccc'))
+  await readCommand().handler(invocation('小说', '../../etc'))
+  listed = await api('GET', '/sessions')
+  assert.deepEqual(listed.body.sessions.map((entry) => entry.sessionId), ['session-aaa', 'session-bbb'])
+
+  const forgot = await api('POST', '/sessions', { forget: 'session-bbb' })
+  assert.deepEqual(forgot.body.sessions.map((entry) => entry.sessionId), ['session-aaa'])
+  assert.equal((await api('POST', '/sessions', { forget: 42 })).status, 400)
+  assert.equal(JSON.parse(await readFile(join(home, 'dsh-chat-reader', 'sessions.json'), 'utf8')).sessions.length, 1)
+})
+
 test('intParam rejects non-integers and out-of-range values', () => {
   assert.equal(intParam('5', 'x'), 5)
   assert.equal(intParam(null, 'x', { fallback: 3 }), 3)

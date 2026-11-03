@@ -21,6 +21,7 @@
 - **格式**：`.txt`（UTF-8 / UTF-8 BOM / UTF-16 LE·BE（有无 BOM 均可）/ GB18030 / GBK / Big5 自动嗅探）、`.md`、`.epub`（EPUB 2/3，按 nav / NCX 分章）。txt 自动识别「第X章 / 第X回 / 卷X / 楔子 / Chapter N …」分章。
 - **每本书独立进度**，刷新页面或重启 App 后从上次段落继续。
 - **书签、章节目录、书内搜索**。
+- **继续阅读入口**：在 New Session 里 `/read` 不会开启模型轮次，DSH 会把这个会话当作空白会话，一切到别的会话就从侧边栏消失。插件会记住每次 `/read` 所在的会话，侧边栏 **More** 菜单顶部会列出最近三个「继续阅读 · 书名」，点一下就回到原来的会话，阅读卡和位置都在。老板键模式下这些菜单项也会隐藏。
 
 ### 键盘
 
@@ -63,12 +64,14 @@ dsh plugin --profile web add github:luyang950/dsh-chat-reader
 
 > 与 `dsh-read` 插件都注册 `/read` 命令，二者不能同时启用。
 
+> 已知限制：DSH 点 New Session 时会优先复用同一工作区里的空白会话，所以可能直接回到某个阅读会话。此时在里面正常提问即可，阅读卡留在上方，会话会变成普通会话并出现在侧边栏。
+
 ### 安全
 
 - 所有接口只接受**书库根目录内的相对路径**；绝对路径、`..`、反斜杠、NUL 一律拒绝；解析真实路径后再校验一次，指向书库外的符号链接也会被拒绝。
 - 扩展名白名单：`.txt` / `.md` / `.epub`；单文件上限 256 MB（读取前检查）。
 - 只读正文，从不写用户的原文件；EPUB 内部链接也不能越出压缩包。
-- 插件只写 `$DSH_HOME/dsh-chat-reader/`：`config.json`、`progress.json`、`notes.json`（书签）。
+- 插件只写 `$DSH_HOME/dsh-chat-reader/`：`config.json`、`progress.json`、`notes.json`（书签）、`sessions.json`（打开过阅读卡的会话 id，最多 20 个）。
 
 ### HTTP 接口
 
@@ -83,6 +86,7 @@ dsh plugin --profile web add github:luyang950/dsh-chat-reader
 | `search?book=&q=&from=` | GET | 书内搜索（最多 50 条） |
 | `progress` | GET / POST `{book,index}` | 进度 |
 | `notes` | GET / POST `{book,index}` / `{book,remove}` | 书签 |
+| `sessions` | GET / POST `{forget}` | 打开过阅读卡的会话（新到旧，含进度）/ 移除一条 |
 
 ### 开发
 
@@ -122,6 +126,7 @@ Targets DSH `>=0.2.1-0 <0.3.0-0` (Web and Desktop; verified against the Desktop 
 - **Boss key** (default `Ctrl + Alt + B`, configurable): collapses every reader to a single `···` line and **removes the text from the DOM** (not `visibility:hidden`); press again to restore at the same paragraph. The state survives reloads.
 - **Formats** — `.txt` with encoding sniffing (UTF-8 / BOM / UTF-16 LE·BE with or without BOM / GB18030 / GBK / Big5), `.md`, `.epub` (EPUB 2/3, chapters from nav / NCX). Chapter headings in txt are detected (`第X章`, `Chapter N`, prologue …).
 - **Per-book progress**, restored after a reload or an app restart. Bookmarks, table of contents, in-book search.
+- **Way back to a reader** — `/read` in a New Session starts no model turn, so DSH treats that Session as blank and drops it from the sidebar once you switch away. The plugin remembers which Sessions hold a reader, and the sidebar's **More** menu lists the newest three as 继续阅读 · <title>; one click reopens the Session with the card where you left it. The rows are hidden in boss mode.
 
 ### Keys
 
@@ -164,12 +169,14 @@ Distributed pre-built: no `prepare`/build scripts and no TypeScript, so pnpm nev
 
 > Both this plugin and `dsh-read` register `/read`; enable only one of them.
 
+> Known limitation: DSH's New Session reuses a blank Session of the same workspace first, so it may land you back in a reading Session. Just chat there as usual — the card stays above and the Session becomes an ordinary one in the sidebar.
+
 ### Security
 
 - Every route takes a **path relative to the library root**; absolute paths, `..`, backslashes and NUL are refused, and the real (symlink-resolved) path is re-checked against the real root.
 - Extension whitelist `.txt` / `.md` / `.epub`; files over 256 MB are refused before reading.
 - Book files are only read, never written; EPUB hrefs cannot escape the archive.
-- The plugin writes only `$DSH_HOME/dsh-chat-reader/` (`config.json`, `progress.json`, `notes.json`).
+- The plugin writes only `$DSH_HOME/dsh-chat-reader/` (`config.json`, `progress.json`, `notes.json`, and `sessions.json` — the ids of up to 20 Sessions that hold a reader).
 
 ### Development
 
